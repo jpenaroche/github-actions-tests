@@ -1,0 +1,7 @@
+prod:
+  s3Url: s3://djprodbucket
+dev:
+  s3Url: s3://djtestingbucket
+files: 
+   - ace.test.txt
+   - test2.txt

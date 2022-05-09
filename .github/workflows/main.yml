@@ -2,37 +2,105 @@
 
 name: CI
 
-on: [ push, pull_request ]
+on:
+  push:
+    branches:
+      - "**"
+      - "!main"
+
+  pull_request:
+    branches:
+      - main
+    types: [opened, closed]
 
 jobs:
   directories:
     runs-on: ubuntu-latest
     name: Get all directories with changed files
-    # Map a step output to a job output
     outputs:
-      all: ${{ steps.changes.outputs.all}}
+        matrix: ${{ steps.changes.outputs.matrix}}
+        stage: ${{ steps.set_stage.outputs.stage }}
     steps:
-        # Make sure we have some code to diff.
+      - name: Set stage
+        id: set_stage
+        run: |
+         if [ "${{ github.event_name }}" = "push" ]; then
+          echo "::set-output name=stage::dev"
+         else
+           if [ ${{github.event.action}} = 'closed' ] && [ ${{github.event.pull_request.merged}} = true ]; then
+            echo "::set-output name=stage::prod"
+           fi
+         fi
       - name: Checkout repository
         uses: actions/checkout@v2
+        with:
+          fetch-depth: 2
       - name: Get changed directories
         id: changes
-        # Set outputs using the command.
         run: |
-          echo "::set-output name=all::$(git diff --dirstat-by-file --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.sha }} | xargs | tr " " "\n" | sed -n 'n;p')"
-  show:
-    runs-on: ubuntu-latest
-    name: Show changed directories
-    needs: directories
-    if: ${{needs.directories.outputs.all}}
-    steps:
-      - name: Showing changed directories
-        run: |
-          directories="${{ needs.directories.outputs.all }}"
-          for i in $directories; do 
-            file="${i}action.yml";
-            echo "working on ${file}";
-            if [[ -f $file ]]; then
-                echo "$file exists on your filesystem."
-            fi;
-          done;
+            #TODO improve array of affected directories generation 
+            data=$(git diff --dirstat-by-file HEAD~1  | xargs | tr " " "\n" | sed -n 'n;p' | sed -e 's/\/$/","/g' -e '$ s/,"$//g' -e 's/"\s"//g' | tr -d '[:space:]' ) 
+            if [[ $data ]]; then
+              data="[\"${data}]"
+            else
+              data="[]"
+            fi
+            echo $data
+            echo "::set-output name=matrix::$data"
+  directory:
+      needs: directories
+      runs-on: ubuntu-latest
+      outputs:
+        files: ${{ steps.aws-s3-files.outputs.data}}
+        directory: ${{ matrix.value}}
+      strategy:
+        matrix:
+          value: ${{fromJson(needs.directories.outputs.matrix)}}
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v2
+        - name: Check configuration file for directory
+          id: check_file
+          run: |
+              file="$GITHUB_WORKSPACE/${{matrix.value}}/conf.yml"
+              if test -f "$file"; then
+                echo "::set-output name=exists::true"
+              else
+                echo "::set-output name=exists::false"
+              fi
+              echo "::set-output name=filepath::$file"
+        - name: Get S3 url from yaml file
+          id: aws-s3-url
+          if: steps.check_file.outputs.exists == 'true'
+          uses: KJ002/read-yaml@main
+          with:
+            file: "${{steps.check_file.outputs.filepath}}"
+            key-path: '["${{needs.directories.outputs.stage}}", "s3Url"]'
+        - name: Get files to upload from yaml file
+          id: aws-s3-files
+          if: steps.check_file.outputs.exists == 'true'
+          uses: KJ002/read-yaml@main
+          with:
+            file: "${{steps.check_file.outputs.filepath}}"
+            key-path: '["files"]'
+        - name: Configure AWS Credentials
+          if: steps.check_file.outputs.exists == 'true'
+          uses: aws-actions/configure-aws-credentials@v1
+          with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: us-east-1
+        - name: Upload file
+          if: steps.check_file.outputs.exists == 'true'
+          run: |
+            echo "url ${{steps.aws-s3-url.outputs.data}}"
+            data=($(echo '${{steps.aws-s3-files.outputs.data}}' | jq -r '.[]'))
+            for file in "${data[@]}"; do
+              filepath="$GITHUB_WORKSPACE/${{matrix.value}}/${file}"
+              if test -f "$filepath"; then
+                echo "uploading ${file} from yaml parameters"
+                aws s3 cp $filepath ${{steps.aws-s3-url.outputs.data}}/${file}
+              else
+                echo "File \"${file}\" doesn't exists"
+              fi
+            done
