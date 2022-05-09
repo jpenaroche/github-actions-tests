@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     name: Get all directories with changed files
     outputs:
-      matrix: ${{ steps.changes.outputs.matrix}}
-      stage: ${{ steps.set_stage.outputs.stage }}
+        matrix: ${{ steps.changes.outputs.matrix}}
+        stage: ${{ steps.set_stage.outputs.stage }}
     steps:
       - name: Set stage
         id: set_stage
