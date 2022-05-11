@@ -13,6 +13,7 @@ on:
       - main
     types: [opened, closed]
 
+# Adding some basic comment for testing purposes
 jobs:
   directories:
     runs-on: ubuntu-latest
